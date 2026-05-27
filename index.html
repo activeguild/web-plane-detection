@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Web Plane Detection - Phase 1</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #000; overflow: hidden; }
+      #canvas { display: block; width: 100vw; height: 100vh; object-fit: cover; }
+      #video { display: none; }
+      #loading {
+        position: fixed; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        color: #fff; font-family: sans-serif; font-size: 1.2rem;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading">OpenCV.js を読み込み中...</div>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
