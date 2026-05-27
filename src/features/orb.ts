@@ -6,7 +6,8 @@ export interface Point2D {
 }
 
 export class OrbDetector {
-  private orb: cv.ORB;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private orb: any;
 
   constructor(nfeatures: number = 500) {
     this.orb = new cv.ORB(nfeatures);
