@@ -7,19 +7,31 @@ export class PlaneOverlay {
     this.ctx = ctx;
   }
 
+  private logCount = 0;
+
   draw(inliers: Point3D[], R: number[][], t: number[], K: number[][]): void {
     const projected: { x: number; y: number }[] = [];
+    let behindCount = 0;
     for (const p of inliers) {
       const cx = R[0][0] * p.x + R[0][1] * p.y + R[0][2] * p.z + t[0];
       const cy = R[1][0] * p.x + R[1][1] * p.y + R[1][2] * p.z + t[1];
       const cz = R[2][0] * p.x + R[2][1] * p.y + R[2][2] * p.z + t[2];
 
-      if (cz <= 0) continue;
+      if (cz <= 0) { behindCount++; continue; }
 
       const u = (K[0][0] * cx + K[0][2] * cz) / cz;
       const v = (K[1][1] * cy + K[1][2] * cz) / cz;
 
       projected.push({ x: u, y: v });
+    }
+
+    if (this.logCount < 5) {
+      console.log(`[SLAM] PlaneOverlay: ${projected.length} projected, ${behindCount} behind, t=[${t.map(v=>v.toFixed(3))}]`);
+      if (projected.length > 0) {
+        const p0 = projected[0];
+        console.log(`[SLAM] PlaneOverlay: first point (${p0.x.toFixed(1)}, ${p0.y.toFixed(1)})`);
+      }
+      this.logCount++;
     }
 
     if (projected.length < 3) return;

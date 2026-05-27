@@ -8,11 +8,21 @@ export type PlaneResult = {
 
 export function detectPlane(
   points: Point3D[],
-  threshold: number = 0.02,
+  threshold?: number,
   iterations: number = 200,
 ): PlaneResult | null {
   const n = points.length;
   if (n < 3) return null;
+
+  // 閾値が未指定なら点群のスケールから自動設定
+  // 中央値距離の 5% を閾値とする
+  if (threshold === undefined) {
+    const dists = points.map(p => Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z));
+    const sorted = [...dists].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    threshold = median * 0.05;
+    console.log(`[SLAM] plane RANSAC auto-threshold: ${threshold.toFixed(4)} (median dist: ${median.toFixed(4)})`);
+  }
 
   let bestInliers: number[] = [];
   let bestNormal: number[] = [0, 0, 0];
