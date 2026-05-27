@@ -6,8 +6,11 @@ import { FeatureTracker } from './features/tracker';
 import { estimatePose } from './geometry/essential';
 import { estimatePosePnP } from './geometry/pnp';
 import { triangulatePoints, Point3D } from './geometry/triangulation';
+import { ImuSensor } from './imu/sensor';
+import { ImuData } from './imu/normalize';
 import { detectPlane, PlaneResult } from './plane/ransac';
 import { SlamMap } from './slam/map';
+import { GravityIndicator } from './visualization/gravity-indicator';
 import { PlaneOverlay } from './visualization/plane-overlay';
 import { PointCloudView } from './visualization/point-cloud';
 
@@ -25,21 +28,63 @@ async function main() {
   const video = document.getElementById('video') as HTMLVideoElement;
   const canvas = document.getElementById('canvas') as HTMLCanvasElement;
   const loading = document.getElementById('loading') as HTMLDivElement;
+  const loadingText = document.getElementById('loading-text') as HTMLSpanElement;
+  const imuBtn = document.getElementById('imu-btn') as HTMLButtonElement;
   const ctx = canvas.getContext('2d')!;
 
   console.log('[SLAM] main() started');
 
-  loading.textContent = 'OpenCV.js を読み込み中...';
+  loadingText.textContent = 'OpenCV.js を読み込み中...';
   await waitForOpenCv();
   console.log('[SLAM] OpenCV.js ready');
 
-  loading.textContent = 'カメラを起動中...';
+  loadingText.textContent = 'カメラを起動中...';
   await initCamera(video);
   const w = video.videoWidth;
   const h = video.videoHeight;
   console.log(`[SLAM] camera ready: ${w}x${h}`);
   canvas.width = w;
   canvas.height = h;
+
+  // IMU 初期化
+  const imuSensor = new ImuSensor();
+  let latestImu: ImuData | null = null;
+  let gravity: { x: number; y: number; z: number } | null = null;
+
+  const startImu = async () => {
+    try {
+      await imuSensor.start((data) => {
+        latestImu = data;
+        const a = 0.8;
+        if (gravity === null) {
+          gravity = { ...data.acceleration };
+        } else {
+          gravity.x = a * gravity.x + (1 - a) * data.acceleration.x;
+          gravity.y = a * gravity.y + (1 - a) * data.acceleration.y;
+          gravity.z = a * gravity.z + (1 - a) * data.acceleration.z;
+        }
+      });
+      console.log('[SLAM] IMU started');
+    } catch (e) {
+      console.warn('[SLAM] IMU not available:', e);
+    }
+  };
+
+  const DME = DeviceMotionEvent as any;
+  if (typeof DME.requestPermission === 'function') {
+    loadingText.textContent = 'モーションセンサーの許可が必要です';
+    imuBtn.style.display = 'block';
+    await new Promise<void>((resolve) => {
+      imuBtn.addEventListener('click', async () => {
+        imuBtn.style.display = 'none';
+        loadingText.textContent = '許可を取得中...';
+        await startImu();
+        resolve();
+      }, { once: true });
+    });
+  } else {
+    await startImu();
+  }
 
   loading.style.display = 'none';
 
@@ -50,6 +95,7 @@ async function main() {
   const slamMap = new SlamMap();
   const pointCloudView = new PointCloudView(ctx, w, h);
   const planeOverlay = new PlaneOverlay(ctx);
+  const gravityIndicator = new GravityIndicator(ctx, h);
   const K = calibration.getCameraMatrixAsMat();
   const Karray = calibration.getCameraMatrix();
 
@@ -72,19 +118,16 @@ async function main() {
   let frameCount = 0;
   function processFrame() {
     try {
-      // フレーム取得
       offCtx.drawImage(video, 0, 0, w, h);
       const imageData = offCtx.getImageData(0, 0, w, h);
       const frame = cv.matFromImageData(imageData);
 
-      // 追跡
       const result = tracker.process(frame);
       frame.delete();
 
-      // 描画: 映像
       ctx.drawImage(video, 0, 0, w, h);
 
-      // 描画: 移動ベクトル（赤い線）
+      // 描画: 移動ベクトル
       ctx.strokeStyle = '#ff0000';
       ctx.lineWidth = 1.5;
       for (let i = 0; i < result.count; i++) {
@@ -98,7 +141,7 @@ async function main() {
         }
       }
 
-      // 描画: 特徴点マーカー（緑の円）
+      // 描画: 特徴点マーカー
       ctx.fillStyle = '#00ff00';
       for (let i = 0; i < result.count; i++) {
         const p = result.points[i];
@@ -108,7 +151,6 @@ async function main() {
       }
 
       if (!initialized) {
-        // --- 未初期化: ホモグラフィ初期化 ---
         if (frameCount % 30 === 0) {
           console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
         }
@@ -145,13 +187,12 @@ async function main() {
               initialized = true;
               console.log(`[SLAM] initialized! ${points3D.length} 3D points`);
 
-              // 平面検出（初期化時に1回）
-              planeResult = detectPlane(points3D);
+              // 平面検出（重力フィルタ付き）
+              planeResult = detectPlane(points3D, undefined, 200, gravity ?? undefined);
             }
           }
         }
       } else {
-        // --- 初期化済み: PnP 追跡 ---
         const { points3D: matched3D, points2D: matched2D } = slamMap.get3D2DPairs(result.ids, result.points);
 
         if (matched3D.length >= 6) {
@@ -169,14 +210,19 @@ async function main() {
         }
       }
 
-      // 平面オーバーレイ描画
+      // 平面オーバーレイ
       if (planeResult && currentR && currentT) {
         planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
       }
 
-      // 点群 + 軌跡の可視化
+      // 点群 + 軌跡
       if (initialized) {
         pointCloudView.draw(points3D, trajectory);
+      }
+
+      // 重力インジケータ
+      if (gravity) {
+        gravityIndicator.draw(gravity);
       }
 
       frameCount++;
