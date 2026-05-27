@@ -10,18 +10,29 @@ export function detectPlane(
   points: Point3D[],
   threshold?: number,
   iterations: number = 200,
+  gravityVector?: { x: number; y: number; z: number },
 ): PlaneResult | null {
   const n = points.length;
   if (n < 3) return null;
 
-  // 閾値が未指定なら点群のスケールから自動設定
-  // 中央値距離の 5% を閾値とする
   if (threshold === undefined) {
     const dists = points.map(p => Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z));
     const sorted = [...dists].sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)];
     threshold = median * 0.05;
     console.log(`[SLAM] plane RANSAC auto-threshold: ${threshold.toFixed(4)} (median dist: ${median.toFixed(4)})`);
+  }
+
+  let gravNorm: number[] | null = null;
+  if (gravityVector) {
+    const mag = Math.sqrt(
+      gravityVector.x * gravityVector.x +
+      gravityVector.y * gravityVector.y +
+      gravityVector.z * gravityVector.z,
+    );
+    if (mag > 0.01) {
+      gravNorm = [gravityVector.x / mag, gravityVector.y / mag, gravityVector.z / mag];
+    }
   }
 
   let bestInliers: number[] = [];
@@ -52,6 +63,12 @@ export function detectPlane(
     const a = nx / len;
     const b = ny / len;
     const c = nz / len;
+
+    if (gravNorm) {
+      const dot = Math.abs(a * gravNorm[0] + b * gravNorm[1] + c * gravNorm[2]);
+      if (dot < 0.866) continue;
+    }
+
     const d = -(a * p0.x + b * p0.y + c * p0.z);
 
     const inliers: number[] = [];
@@ -70,12 +87,12 @@ export function detectPlane(
   }
 
   if (bestInliers.length < n * 0.3) {
-    console.log(`[SLAM] plane detection failed: ${bestInliers.length}/${n} inliers`);
+    console.log(`[SLAM] plane detection failed: ${bestInliers.length}/${n} inliers${gravNorm ? ' (with gravity filter)' : ''}`);
     return null;
   }
 
   const inlierPoints = bestInliers.map(i => points[i]);
-  console.log(`[SLAM] plane detected: ${inlierPoints.length}/${n} inliers, normal=[${bestNormal.map(v => v.toFixed(3)).join(', ')}]`);
+  console.log(`[SLAM] plane detected: ${inlierPoints.length}/${n} inliers, normal=[${bestNormal.map(v => v.toFixed(3)).join(', ')}]${gravNorm ? ' (gravity filtered)' : ''}`);
 
   return {
     normal: bestNormal,
