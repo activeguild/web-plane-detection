@@ -12,29 +12,25 @@ export class PointCloudView {
     this.originY = canvasHeight - this.viewSize - 10;
   }
 
-  draw(points: Point3D[], cameraT?: number[]): void {
+  draw(points: Point3D[], trajectory: { x: number; z: number }[]): void {
     const ctx = this.ctx;
     const ox = this.originX;
     const oy = this.originY;
     const size = this.viewSize;
 
-    // 半透明背景
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.fillRect(ox, oy, size, size);
 
-    // 枠線
     ctx.strokeStyle = '#444';
     ctx.lineWidth = 1;
     ctx.strokeRect(ox, oy, size, size);
 
-    // ラベル
     ctx.fillStyle = '#888';
     ctx.font = '10px sans-serif';
     ctx.fillText('Bird\'s Eye (X-Z)', ox + 4, oy + 12);
 
     if (points.length === 0) return;
 
-    // X-Z 平面のスケーリング（点群の範囲に合わせる）
     let minX = Infinity, maxX = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
     for (const p of points) {
@@ -44,15 +40,13 @@ export class PointCloudView {
       if (p.z > maxZ) maxZ = p.z;
     }
 
-    // カメラ位置も範囲に含める
-    if (cameraT) {
-      if (cameraT[0] < minX) minX = cameraT[0];
-      if (cameraT[0] > maxX) maxX = cameraT[0];
-      if (cameraT[2] < minZ) minZ = cameraT[2];
-      if (cameraT[2] > maxZ) maxZ = cameraT[2];
+    for (const t of trajectory) {
+      if (t.x < minX) minX = t.x;
+      if (t.x > maxX) maxX = t.x;
+      if (t.z < minZ) minZ = t.z;
+      if (t.z > maxZ) maxZ = t.z;
     }
 
-    // 原点（カメラ1）も含める
     if (0 < minX) minX = 0;
     if (0 > maxX) maxX = 0;
     if (0 < minZ) minZ = 0;
@@ -67,7 +61,6 @@ export class PointCloudView {
     const toScreenX = (x: number) => ox + margin + (x - minX) * scale;
     const toScreenY = (z: number) => oy + margin + (z - minZ) * scale;
 
-    // 3D点群（白い点）
     ctx.fillStyle = '#ffffff';
     for (const p of points) {
       const sx = toScreenX(p.x);
@@ -75,12 +68,22 @@ export class PointCloudView {
       ctx.fillRect(sx - 1, sy - 1, 2, 2);
     }
 
-    // カメラ1（原点、緑の三角）
+    if (trajectory.length > 1) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(toScreenX(trajectory[0].x), toScreenY(trajectory[0].z));
+      for (let i = 1; i < trajectory.length; i++) {
+        ctx.lineTo(toScreenX(trajectory[i].x), toScreenY(trajectory[i].z));
+      }
+      ctx.stroke();
+    }
+
     this.drawCamera(toScreenX(0), toScreenY(0), '#00ff00');
 
-    // カメラ2（推定位置、黄色の三角）
-    if (cameraT) {
-      this.drawCamera(toScreenX(cameraT[0]), toScreenY(cameraT[2]), '#ffff00');
+    if (trajectory.length > 0) {
+      const latest = trajectory[trajectory.length - 1];
+      this.drawCamera(toScreenX(latest.x), toScreenY(latest.z), '#ffff00');
     }
   }
 
