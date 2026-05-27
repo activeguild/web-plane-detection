@@ -54,7 +54,7 @@ async function main() {
   let initialized = false;
   let points3D: Point3D[] = [];
   let cameraT: number[] = [];
-  const MOTION_THRESHOLD = 50;
+  const MOTION_THRESHOLD = 15;
 
   console.log('[SLAM] starting tracking loop');
 
@@ -96,16 +96,22 @@ async function main() {
         ctx.fill();
       }
 
+      // avgMotion を定期的にログ
+      if (frameCount % 30 === 0 && !initialized) {
+        console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
+      }
+
       // 初期化判定
       if (!initialized && result.avgMotion > MOTION_THRESHOLD && result.count >= 30) {
         console.log(`[SLAM] initialization trigger: avgMotion=${result.avgMotion.toFixed(1)}, points=${result.count}`);
 
+        const K = calibration.getCameraMatrixAsMat();
         const pose = estimatePose(
           result.prevPoints,
           result.points,
-          calibration.getFocalLength(),
-          calibration.getPrincipalPoint(),
+          K,
         );
+        K.delete();
 
         if (pose) {
           points3D = triangulatePoints(
