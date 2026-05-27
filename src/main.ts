@@ -1,7 +1,11 @@
 import cv from '@techstark/opencv-js';
 import { initCamera } from './camera/capture';
+import { CameraCalibration } from './camera/calibration';
 import { OrbDetector } from './features/orb';
 import { FeatureTracker } from './features/tracker';
+import { estimatePose } from './geometry/essential';
+import { triangulatePoints, Point3D } from './geometry/triangulation';
+import { PointCloudView } from './visualization/point-cloud';
 
 function waitForOpenCv(): Promise<void> {
   return new Promise((resolve) => {
@@ -22,12 +26,10 @@ async function main() {
   console.log('[SLAM] main() started');
 
   loading.textContent = 'OpenCV.js を読み込み中...';
-  console.log('[SLAM] waiting for OpenCV.js...');
   await waitForOpenCv();
   console.log('[SLAM] OpenCV.js ready');
 
   loading.textContent = 'カメラを起動中...';
-  console.log('[SLAM] initializing camera...');
   await initCamera(video);
   const w = video.videoWidth;
   const h = video.videoHeight;
@@ -37,23 +39,29 @@ async function main() {
 
   loading.style.display = 'none';
 
-  // ORB 検出器 + Tracker
+  // モジュール初期化
+  const calibration = new CameraCalibration(w, h);
   const orb = new OrbDetector(500);
   const tracker = new FeatureTracker(orb, 200);
-  console.log('[SLAM] tracker created');
+  const pointCloudView = new PointCloudView(ctx, w, h);
 
-  // offscreen canvas でフレーム取得
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
   offscreen.height = h;
   const offCtx = offscreen.getContext('2d')!;
+
+  // 初期化状態
+  let initialized = false;
+  let points3D: Point3D[] = [];
+  let cameraT: number[] = [];
+  const MOTION_THRESHOLD = 50;
 
   console.log('[SLAM] starting tracking loop');
 
   let frameCount = 0;
   function processFrame() {
     try {
-      // 映像フレーム取得
+      // フレーム取得
       offCtx.drawImage(video, 0, 0, w, h);
       const imageData = offCtx.getImageData(0, 0, w, h);
       const frame = cv.matFromImageData(imageData);
@@ -71,7 +79,6 @@ async function main() {
       for (let i = 0; i < result.count; i++) {
         const prev = result.prevPoints[i];
         const curr = result.points[i];
-        // 同じ点（新規追加）はスキップ
         if (prev.x !== curr.x || prev.y !== curr.y) {
           ctx.beginPath();
           ctx.moveTo(prev.x, prev.y);
@@ -89,8 +96,44 @@ async function main() {
         ctx.fill();
       }
 
+      // 初期化判定
+      if (!initialized && result.avgMotion > MOTION_THRESHOLD && result.count >= 30) {
+        console.log(`[SLAM] initialization trigger: avgMotion=${result.avgMotion.toFixed(1)}, points=${result.count}`);
+
+        const pose = estimatePose(
+          result.prevPoints,
+          result.points,
+          calibration.getFocalLength(),
+          calibration.getPrincipalPoint(),
+        );
+
+        if (pose) {
+          points3D = triangulatePoints(
+            result.prevPoints,
+            result.points,
+            pose.R,
+            pose.t,
+            calibration.getCameraMatrix(),
+            pose.inlierMask,
+          );
+
+          if (points3D.length > 10) {
+            cameraT = pose.t;
+            initialized = true;
+            console.log(`[SLAM] initialized! ${points3D.length} 3D points`);
+          } else {
+            console.log(`[SLAM] not enough 3D points: ${points3D.length}`);
+          }
+        }
+      }
+
+      // 点群可視化
+      if (initialized) {
+        pointCloudView.draw(points3D, cameraT);
+      }
+
       frameCount++;
-      if (frameCount === 1) console.log(`[SLAM] first frame: ${result.count} points tracked`);
+      if (frameCount === 1) console.log(`[SLAM] first frame: ${result.count} points`);
     } catch (e) {
       console.error('[SLAM] processFrame error:', e);
     }
