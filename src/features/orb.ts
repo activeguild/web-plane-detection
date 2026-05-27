@@ -3,6 +3,7 @@ import cv from '@techstark/opencv-js';
 export interface Point2D {
   x: number;
   y: number;
+  id: number;
 }
 
 export class OrbDetector {
@@ -20,7 +21,7 @@ export class OrbDetector {
     const points: Point2D[] = [];
     for (let i = 0; i < keypoints.size(); i++) {
       const kp = keypoints.get(i);
-      points.push({ x: kp.pt.x, y: kp.pt.y });
+      points.push({ x: kp.pt.x, y: kp.pt.y, id: -1 });
     }
 
     keypoints.delete();
