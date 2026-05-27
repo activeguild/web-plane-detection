@@ -4,7 +4,9 @@ import { CameraCalibration } from './camera/calibration';
 import { OrbDetector } from './features/orb';
 import { FeatureTracker } from './features/tracker';
 import { estimatePose } from './geometry/essential';
+import { estimatePosePnP } from './geometry/pnp';
 import { triangulatePoints, Point3D } from './geometry/triangulation';
+import { SlamMap } from './slam/map';
 import { PointCloudView } from './visualization/point-cloud';
 
 function waitForOpenCv(): Promise<void> {
@@ -43,17 +45,19 @@ async function main() {
   const calibration = new CameraCalibration(w, h);
   const orb = new OrbDetector(500);
   const tracker = new FeatureTracker(orb, 200);
+  const slamMap = new SlamMap();
   const pointCloudView = new PointCloudView(ctx, w, h);
+  const K = calibration.getCameraMatrixAsMat();
 
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
   offscreen.height = h;
   const offCtx = offscreen.getContext('2d')!;
 
-  // 初期化状態
+  // 状態
   let initialized = false;
   let points3D: Point3D[] = [];
-  let cameraT: number[] = [];
+  const trajectory: { x: number; z: number }[] = [{ x: 0, z: 0 }];
   const MOTION_THRESHOLD = 15;
 
   console.log('[SLAM] starting tracking loop');
@@ -96,46 +100,64 @@ async function main() {
         ctx.fill();
       }
 
-      // avgMotion を定期的にログ
-      if (frameCount % 30 === 0 && !initialized) {
-        console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
-      }
+      if (!initialized) {
+        // --- 未初期化: ホモグラフィ初期化を試みる ---
+        if (frameCount % 30 === 0) {
+          console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
+        }
 
-      // 初期化判定
-      if (!initialized && result.avgMotion > MOTION_THRESHOLD && result.count >= 30) {
-        console.log(`[SLAM] initialization trigger: avgMotion=${result.avgMotion.toFixed(1)}, points=${result.count}`);
+        if (result.avgMotion > MOTION_THRESHOLD && result.count >= 30) {
+          console.log(`[SLAM] initialization trigger: avgMotion=${result.avgMotion.toFixed(1)}`);
 
-        const K = calibration.getCameraMatrixAsMat();
-        const pose = estimatePose(
-          result.prevPoints,
-          result.points,
-          K,
-        );
-        K.delete();
+          const pose = estimatePose(result.prevPoints, result.points, K);
 
-        if (pose) {
-          points3D = triangulatePoints(
-            result.prevPoints,
-            result.points,
-            pose.R,
-            pose.t,
-            calibration.getCameraMatrix(),
-            pose.inlierMask,
-          );
+          if (pose) {
+            const inlierIds: number[] = [];
+            const inlierPrev: { x: number; y: number; id: number }[] = [];
+            const inlierCurr: { x: number; y: number; id: number }[] = [];
+            for (let i = 0; i < result.count; i++) {
+              if (pose.inlierMask[i]) {
+                inlierIds.push(result.ids[i]);
+                inlierPrev.push(result.prevPoints[i]);
+                inlierCurr.push(result.points[i]);
+              }
+            }
 
-          if (points3D.length > 10) {
-            cameraT = pose.t;
-            initialized = true;
-            console.log(`[SLAM] initialized! ${points3D.length} 3D points`);
-          } else {
-            console.log(`[SLAM] not enough 3D points: ${points3D.length}`);
+            points3D = triangulatePoints(
+              inlierPrev, inlierCurr,
+              pose.R, pose.t,
+              calibration.getCameraMatrix(),
+              inlierIds.map(() => true),
+            );
+
+            if (points3D.length > 10) {
+              slamMap.register(inlierIds.slice(0, points3D.length), points3D);
+              trajectory.push({ x: pose.t[0], z: pose.t[2] });
+              initialized = true;
+              console.log(`[SLAM] initialized! ${points3D.length} 3D points, map size=${slamMap.size}`);
+            }
           }
+        }
+      } else {
+        // --- 初期化済み: PnP 追跡 ---
+        const { points3D: matched3D, points2D: matched2D } = slamMap.get3D2DPairs(result.ids, result.points);
+
+        if (matched3D.length >= 6) {
+          const pnpResult = estimatePosePnP(matched3D, matched2D, K);
+          if (pnpResult) {
+            trajectory.push({ x: pnpResult.t[0], z: pnpResult.t[2] });
+            if (frameCount % 30 === 0) {
+              console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers`);
+            }
+          }
+        } else if (frameCount % 60 === 0) {
+          console.log(`[SLAM] PnP: not enough matches (${matched3D.length})`);
         }
       }
 
-      // 点群可視化
+      // 点群 + 軌跡の可視化
       if (initialized) {
-        pointCloudView.draw(points3D, cameraT);
+        pointCloudView.draw(points3D, trajectory);
       }
 
       frameCount++;
