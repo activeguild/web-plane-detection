@@ -6,7 +6,9 @@ import { FeatureTracker } from './features/tracker';
 import { estimatePose } from './geometry/essential';
 import { estimatePosePnP } from './geometry/pnp';
 import { triangulatePoints, Point3D } from './geometry/triangulation';
+import { detectPlane, PlaneResult } from './plane/ransac';
 import { SlamMap } from './slam/map';
+import { PlaneOverlay } from './visualization/plane-overlay';
 import { PointCloudView } from './visualization/point-cloud';
 
 function waitForOpenCv(): Promise<void> {
@@ -47,7 +49,9 @@ async function main() {
   const tracker = new FeatureTracker(orb, 200);
   const slamMap = new SlamMap();
   const pointCloudView = new PointCloudView(ctx, w, h);
+  const planeOverlay = new PlaneOverlay(ctx);
   const K = calibration.getCameraMatrixAsMat();
+  const Karray = calibration.getCameraMatrix();
 
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
@@ -57,6 +61,9 @@ async function main() {
   // 状態
   let initialized = false;
   let points3D: Point3D[] = [];
+  let planeResult: PlaneResult | null = null;
+  let currentR: number[][] | null = null;
+  let currentT: number[] | null = null;
   const trajectory: { x: number; z: number }[] = [{ x: 0, z: 0 }];
   const MOTION_THRESHOLD = 15;
 
@@ -101,7 +108,7 @@ async function main() {
       }
 
       if (!initialized) {
-        // --- 未初期化: ホモグラフィ初期化を試みる ---
+        // --- 未初期化: ホモグラフィ初期化 ---
         if (frameCount % 30 === 0) {
           console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
         }
@@ -126,15 +133,20 @@ async function main() {
             points3D = triangulatePoints(
               inlierPrev, inlierCurr,
               pose.R, pose.t,
-              calibration.getCameraMatrix(),
+              Karray,
               inlierIds.map(() => true),
             );
 
             if (points3D.length > 10) {
               slamMap.register(inlierIds.slice(0, points3D.length), points3D);
               trajectory.push({ x: pose.t[0], z: pose.t[2] });
+              currentR = pose.R;
+              currentT = pose.t;
               initialized = true;
-              console.log(`[SLAM] initialized! ${points3D.length} 3D points, map size=${slamMap.size}`);
+              console.log(`[SLAM] initialized! ${points3D.length} 3D points`);
+
+              // 平面検出（初期化時に1回）
+              planeResult = detectPlane(points3D);
             }
           }
         }
@@ -145,6 +157,8 @@ async function main() {
         if (matched3D.length >= 6) {
           const pnpResult = estimatePosePnP(matched3D, matched2D, K);
           if (pnpResult) {
+            currentR = pnpResult.R;
+            currentT = pnpResult.t;
             trajectory.push({ x: pnpResult.t[0], z: pnpResult.t[2] });
             if (frameCount % 30 === 0) {
               console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers`);
@@ -153,6 +167,11 @@ async function main() {
         } else if (frameCount % 60 === 0) {
           console.log(`[SLAM] PnP: not enough matches (${matched3D.length})`);
         }
+      }
+
+      // 平面オーバーレイ描画
+      if (planeResult && currentR && currentT) {
+        planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
       }
 
       // 点群 + 軌跡の可視化
