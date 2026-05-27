@@ -11,9 +11,17 @@ export async function initCamera(video: HTMLVideoElement): Promise<void> {
   video.srcObject = stream;
 
   return new Promise((resolve) => {
-    video.onloadedmetadata = () => {
-      video.play();
-      resolve();
+    video.onloadedmetadata = async () => {
+      await video.play();
+      // videoWidth/Height が確定するまで待つ
+      const waitForSize = () => {
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          resolve();
+        } else {
+          requestAnimationFrame(waitForSize);
+        }
+      };
+      waitForSize();
     };
   });
 }
