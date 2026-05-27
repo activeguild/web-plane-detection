@@ -12,7 +12,6 @@ export class OrbDetector {
     cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
 
     const keypoints = new cv.KeyPointVector();
-    const descriptors = new cv.Mat();
 
     this.orb.detect(gray, keypoints);
 
@@ -20,7 +19,6 @@ export class OrbDetector {
 
     gray.delete();
     keypoints.delete();
-    descriptors.delete();
   }
 
   dispose(): void {
