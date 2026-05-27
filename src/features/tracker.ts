@@ -5,6 +5,7 @@ export type TrackResult = {
   points: Point2D[];
   prevPoints: Point2D[];
   count: number;
+  avgMotion: number;
 };
 
 export class FeatureTracker {
@@ -32,6 +33,7 @@ export class FeatureTracker {
         points: this.prevPoints,
         prevPoints: this.prevPoints,
         count: this.prevPoints.length,
+        avgMotion: 0,
       };
     }
 
@@ -103,10 +105,26 @@ export class FeatureTracker {
     this.prevPoints = trackedPoints;
     oldGray.delete();
 
+    // 平均移動量を計算
+    let totalMotion = 0;
+    let motionCount = 0;
+    for (let i = 0; i < trackedPoints.length; i++) {
+      const dx = trackedPoints[i].x - trackedPrevPoints[i].x;
+      const dy = trackedPoints[i].y - trackedPrevPoints[i].y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      // 新規追加点（prev === curr）はスキップ
+      if (dist > 0) {
+        totalMotion += dist;
+        motionCount++;
+      }
+    }
+    const avgMotion = motionCount > 0 ? totalMotion / motionCount : 0;
+
     return {
       points: trackedPoints,
       prevPoints: trackedPrevPoints,
       count: trackedPoints.length,
+      avgMotion,
     };
   }
 
