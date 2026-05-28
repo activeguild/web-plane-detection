@@ -120,6 +120,8 @@ async function main() {
   let initialized = false;
   let points3D: Point3D[] = [];
   let planeResult: PlaneResult | null = null;
+  let initR: number[][] | null = null;  // 初期化時の姿勢（AR固定用）
+  let initT: number[] | null = null;
   let currentR: number[][] | null = null;
   let currentT: number[] | null = null;
   const trajectory: { x: number; z: number }[] = [{ x: 0, z: 0 }];
@@ -202,8 +204,10 @@ async function main() {
               // 平面検出（重力フィルタ付き）
               planeResult = detectPlane(points3D, undefined, 200, gravity ?? undefined);
 
-              // 平面上にキューブを配置
+              // 平面上にキューブを配置（初期化時の姿勢を保存）
               if (planeResult) {
+                initR = currentR ? currentR.map(r => [...r]) : null;
+                initT = currentT ? [...currentT] : null;
                 arScene.placeModel(planeResult.inliers, planeResult.normal);
               }
             }
@@ -219,10 +223,18 @@ async function main() {
 
         if (matched3D.length >= 4) {
           const pnpResult = estimatePosePnP(matched3D, matched2D, K);
-          if (pnpResult) {
+          if (pnpResult && pnpResult.inlierCount >= 3) {
+            // R はそのまま使用、t のみ低域通過フィルタで平滑化
+            const alpha = 0.4;
             currentR = pnpResult.R;
-            currentT = pnpResult.t;
-            trajectory.push({ x: pnpResult.t[0], z: pnpResult.t[2] });
+            if (currentT) {
+              currentT[0] = alpha * currentT[0] + (1 - alpha) * pnpResult.t[0];
+              currentT[1] = alpha * currentT[1] + (1 - alpha) * pnpResult.t[1];
+              currentT[2] = alpha * currentT[2] + (1 - alpha) * pnpResult.t[2];
+            } else {
+              currentT = pnpResult.t;
+            }
+            trajectory.push({ x: currentT[0], z: currentT[2] });
             if (frameCount % 30 === 0) {
               console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
             }
@@ -243,9 +255,9 @@ async function main() {
         planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
       }
 
-      // AR レンダリング
-      if (arScene.isModelPlaced && currentR && currentT) {
-        arScene.render(currentR, currentT);
+      // AR レンダリング（初期化時の姿勢で固定表示）
+      if (arScene.isModelPlaced && initR && initT) {
+        arScene.render(initR, initT);
       }
 
       // 点群 + 軌跡
