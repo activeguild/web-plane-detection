@@ -4,10 +4,10 @@ export class GravityIndicator {
   private ox: number;
   private oy: number;
 
-  constructor(ctx: CanvasRenderingContext2D, canvasHeight: number) {
+  constructor(ctx: CanvasRenderingContext2D, _canvasHeight: number) {
     this.ctx = ctx;
-    this.ox = 10 + this.size / 2;
-    this.oy = canvasHeight - 10 - this.size / 2;
+    this.ox = 10 + this.size;
+    this.oy = 10 + this.size;
   }
 
   draw(gravity: { x: number; y: number; z: number }): void {

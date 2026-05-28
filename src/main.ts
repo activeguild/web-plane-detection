@@ -53,8 +53,13 @@ async function main() {
 
   const startImu = async () => {
     try {
+      let imuLogCount = 0;
       await imuSensor.start((data) => {
         latestImu = data;
+        if (imuLogCount < 3) {
+          console.log(`[IMU] data: accel=(${data.acceleration.x.toFixed(2)}, ${data.acceleration.y.toFixed(2)}, ${data.acceleration.z.toFixed(2)})`);
+          imuLogCount++;
+        }
         const a = 0.8;
         if (gravity === null) {
           gravity = { ...data.acceleration };
