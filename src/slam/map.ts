@@ -24,6 +24,10 @@ export class SlamMap {
     return { points3D: matched3D, points2D: matched2D };
   }
 
+  has(id: number): boolean {
+    return this.map.has(id);
+  }
+
   get size(): number {
     return this.map.size;
   }
