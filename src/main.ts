@@ -137,6 +137,10 @@ async function main() {
       const frame = cv.matFromImageData(imageData);
 
       const result = tracker.process(frame);
+
+      // グレースケールを再ローカライゼーション用に保持
+      const gray = new cv.Mat();
+      cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
       frame.delete();
 
       ctx.drawImage(video, 0, 0, w, h);
@@ -194,7 +198,10 @@ async function main() {
             );
 
             if (points3D.length > 10) {
-              slamMap.register(inlierIds.slice(0, points3D.length), points3D);
+              // ディスクリプタ付きで登録
+              const { descriptors: initDesc } = orb.detectWithDescriptors(gray);
+              slamMap.register(inlierIds.slice(0, points3D.length), points3D, initDesc);
+              initDesc.delete();
               trajectory.push({ x: pose.t[0], z: pose.t[2] });
               currentR = pose.R;
               currentT = pose.t;
@@ -214,39 +221,45 @@ async function main() {
           }
         }
       } else {
-        // 毎フレーム再ローカライゼーション（ID → 3D 対応を最新に保つ）
-        if (currentR && currentT) {
-          slamMap.relocalize(result.ids, result.points, currentR, currentT, Karray);
-        }
-
+        // ID ベースのマッチを試す
         const { points3D: matched3D, points2D: matched2D } = slamMap.get3D2DPairs(result.ids, result.points);
 
+        let pnpOk = false;
         if (matched3D.length >= 4) {
           const pnpResult = estimatePosePnP(matched3D, matched2D, K);
           if (pnpResult && pnpResult.inlierCount >= 3) {
-            // R はそのまま使用、t のみ低域通過フィルタで平滑化
-            const alpha = 0.4;
             currentR = pnpResult.R;
-            if (currentT) {
-              currentT[0] = alpha * currentT[0] + (1 - alpha) * pnpResult.t[0];
-              currentT[1] = alpha * currentT[1] + (1 - alpha) * pnpResult.t[1];
-              currentT[2] = alpha * currentT[2] + (1 - alpha) * pnpResult.t[2];
-            } else {
-              currentT = pnpResult.t;
-            }
+            currentT = pnpResult.t;
             trajectory.push({ x: currentT[0], z: currentT[2] });
+            pnpOk = true;
             if (frameCount % 30 === 0) {
-              console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
+              console.log(`[SLAM] PnP(ID): ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
             }
 
-            // 新規点を三角測量してマップを拡張
             const newPts = mapper.expandMap(result.ids, result.points, currentR, currentT);
             for (const p of newPts) {
               points3D.push(p);
             }
           }
-        } else if (frameCount % 30 === 0) {
-          console.log(`[SLAM] PnP: matches=${matched3D.length}, map=${slamMap.size}`);
+        }
+
+        // ID ベースが失敗 → ディスクリプタベース再ローカライゼーション
+        if (!pnpOk) {
+          const { keypoints: orbKps, descriptors: orbDesc } = orb.detectWithDescriptors(gray);
+          const { points3D: descMatched3D, points2D: descMatched2D } = slamMap.descriptorMatch(orbKps, orbDesc);
+          orbDesc.delete();
+
+          if (descMatched3D.length >= 6) {
+            const pnpResult = estimatePosePnP(descMatched3D, descMatched2D, K);
+            if (pnpResult && pnpResult.inlierCount >= 4) {
+              currentR = pnpResult.R;
+              currentT = pnpResult.t;
+              trajectory.push({ x: currentT[0], z: currentT[2] });
+              console.log(`[SLAM] PnP(desc): ${pnpResult.inlierCount}/${descMatched3D.length} inliers`);
+            }
+          } else if (frameCount % 30 === 0) {
+            console.log(`[SLAM] reloc: ID=${matched3D.length}, desc=${descMatched3D.length}, map=${slamMap.size}`);
+          }
         }
       }
 
@@ -255,9 +268,9 @@ async function main() {
         planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
       }
 
-      // AR レンダリング（初期化時の姿勢で固定表示）
-      if (arScene.isModelPlaced && initR && initT) {
-        arScene.render(initR, initT);
+      // AR レンダリング（カメラ姿勢に追従）
+      if (arScene.isModelPlaced && currentR && currentT) {
+        arScene.render(currentR, currentT);
       }
 
       // 点群 + 軌跡
@@ -269,6 +282,8 @@ async function main() {
       if (gravity) {
         gravityIndicator.draw(gravity);
       }
+
+      gray.delete();
 
       frameCount++;
       if (frameCount === 1) console.log(`[SLAM] first frame: ${result.count} points`);
