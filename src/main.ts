@@ -10,6 +10,7 @@ import { ImuSensor } from './imu/sensor';
 import { ImuData } from './imu/normalize';
 import { detectPlane, PlaneResult } from './plane/ransac';
 import { SlamMap } from './slam/map';
+import { Mapper } from './slam/mapper';
 import { GravityIndicator } from './visualization/gravity-indicator';
 import { PlaneOverlay } from './visualization/plane-overlay';
 import { PointCloudView } from './visualization/point-cloud';
@@ -103,6 +104,7 @@ async function main() {
   const gravityIndicator = new GravityIndicator(ctx, h);
   const K = calibration.getCameraMatrixAsMat();
   const Karray = calibration.getCameraMatrix();
+  const mapper = new Mapper(slamMap, Karray);
 
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
@@ -207,11 +209,19 @@ async function main() {
             currentT = pnpResult.t;
             trajectory.push({ x: pnpResult.t[0], z: pnpResult.t[2] });
             if (frameCount % 30 === 0) {
-              console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers`);
+              console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
+            }
+
+            // マッチ数が少なくなったら新規点を三角測量して追加
+            if (matched3D.length < 50 && currentR && currentT) {
+              const newPts = mapper.expandMap(result.ids, result.points, currentR, currentT);
+              for (const p of newPts) {
+                points3D.push(p);
+              }
             }
           }
         } else if (frameCount % 60 === 0) {
-          console.log(`[SLAM] PnP: not enough matches (${matched3D.length})`);
+          console.log(`[SLAM] PnP: not enough matches (${matched3D.length}), map=${slamMap.size}`);
         }
       }
 
