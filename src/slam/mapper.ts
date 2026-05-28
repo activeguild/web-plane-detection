@@ -101,6 +101,13 @@ export class Mapper {
       t[2] - RrelTprev[2],
     ];
 
+    // ベースラインチェック: 相対並進が小さすぎる場合はスキップ（データは保持しない → 蓄積させる）
+    const baseline = Math.sqrt(trel[0]*trel[0] + trel[1]*trel[1] + trel[2]*trel[2]);
+    if (baseline < 0.01) {
+      // prevデータは更新しない（もっと動いてから三角測量する）
+      return [];
+    }
+
     const allTrue = commonIds.map(() => true);
     const localPoints = triangulatePoints(
       prevPts, currPts,

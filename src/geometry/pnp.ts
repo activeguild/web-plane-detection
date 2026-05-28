@@ -26,7 +26,7 @@ export function estimatePosePnP(
   cameraMatrixMat: cv.Mat,
 ): PnPResult | null {
   const n = points3D.length;
-  if (n < 6) return null;
+  if (n < 4) return null;
 
   const objPts = new cv.Mat(n, 1, cv.CV_64FC3);
   const objData = objPts.data64F;

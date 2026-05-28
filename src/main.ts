@@ -200,9 +200,14 @@ async function main() {
           }
         }
       } else {
+        // 毎フレーム再ローカライゼーション（ID → 3D 対応を最新に保つ）
+        if (currentR && currentT) {
+          slamMap.relocalize(result.ids, result.points, currentR, currentT, Karray);
+        }
+
         const { points3D: matched3D, points2D: matched2D } = slamMap.get3D2DPairs(result.ids, result.points);
 
-        if (matched3D.length >= 6) {
+        if (matched3D.length >= 4) {
           const pnpResult = estimatePosePnP(matched3D, matched2D, K);
           if (pnpResult) {
             currentR = pnpResult.R;
@@ -212,16 +217,14 @@ async function main() {
               console.log(`[SLAM] PnP: ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
             }
 
-            // マッチ数が少なくなったら新規点を三角測量して追加
-            if (matched3D.length < 50 && currentR && currentT) {
-              const newPts = mapper.expandMap(result.ids, result.points, currentR, currentT);
-              for (const p of newPts) {
-                points3D.push(p);
-              }
+            // 新規点を三角測量してマップを拡張
+            const newPts = mapper.expandMap(result.ids, result.points, currentR, currentT);
+            for (const p of newPts) {
+              points3D.push(p);
             }
           }
-        } else if (frameCount % 60 === 0) {
-          console.log(`[SLAM] PnP: not enough matches (${matched3D.length}), map=${slamMap.size}`);
+        } else if (frameCount % 30 === 0) {
+          console.log(`[SLAM] PnP: matches=${matched3D.length}, map=${slamMap.size}`);
         }
       }
 
