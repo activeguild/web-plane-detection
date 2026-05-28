@@ -14,6 +14,7 @@ import { Mapper } from './slam/mapper';
 import { GravityIndicator } from './visualization/gravity-indicator';
 import { PlaneOverlay } from './visualization/plane-overlay';
 import { PointCloudView } from './visualization/point-cloud';
+import { ArScene } from './rendering/ar-scene';
 
 function waitForOpenCv(): Promise<void> {
   return new Promise((resolve) => {
@@ -105,6 +106,10 @@ async function main() {
   const K = calibration.getCameraMatrixAsMat();
   const Karray = calibration.getCameraMatrix();
   const mapper = new Mapper(slamMap, Karray);
+  const glCanvas = document.getElementById('gl-canvas') as HTMLCanvasElement;
+  glCanvas.width = w;
+  glCanvas.height = h;
+  const arScene = new ArScene(glCanvas, w, h, Karray);
 
   const offscreen = document.createElement('canvas');
   offscreen.width = w;
@@ -196,6 +201,11 @@ async function main() {
 
               // 平面検出（重力フィルタ付き）
               planeResult = detectPlane(points3D, undefined, 200, gravity ?? undefined);
+
+              // 平面上にキューブを配置
+              if (planeResult) {
+                arScene.placeModel(planeResult.inliers, planeResult.normal);
+              }
             }
           }
         }
@@ -231,6 +241,11 @@ async function main() {
       // 平面オーバーレイ
       if (planeResult && currentR && currentT) {
         planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
+      }
+
+      // AR レンダリング
+      if (arScene.isModelPlaced && currentR && currentT) {
+        arScene.render(currentR, currentT);
       }
 
       // 点群 + 軌跡
