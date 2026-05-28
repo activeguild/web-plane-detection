@@ -14,6 +14,25 @@ export class OrbDetector {
     this.orb = new cv.ORB(nfeatures);
   }
 
+  // キーポイント + ディスクリプタを返す（呼び出し側で descriptors.delete() 必須）
+  detectWithDescriptors(gray: cv.Mat): { keypoints: Point2D[]; descriptors: cv.Mat } {
+    const kpVec = new cv.KeyPointVector();
+    const desc = new cv.Mat();
+    const mask = new cv.Mat();
+    this.orb.detect(gray, kpVec);
+    this.orb.compute(gray, kpVec, desc);
+    mask.delete();
+
+    const keypoints: Point2D[] = [];
+    for (let i = 0; i < kpVec.size(); i++) {
+      const kp = kpVec.get(i);
+      keypoints.push({ x: kp.pt.x, y: kp.pt.y, id: -1 });
+    }
+
+    kpVec.delete();
+    return { keypoints, descriptors: desc };
+  }
+
   detectKeypoints(gray: cv.Mat): Point2D[] {
     const keypoints = new cv.KeyPointVector();
     this.orb.detect(gray, keypoints);
