@@ -1,19 +1,10 @@
 import cv from '@techstark/opencv-js';
 import { initCamera } from './camera/capture';
 import { CameraCalibration } from './camera/calibration';
-import { OrbDetector } from './features/orb';
-import { FeatureTracker } from './features/tracker';
-import { estimatePose } from './geometry/essential';
-import { estimatePosePnP } from './geometry/pnp';
-import { triangulatePoints, Point3D } from './geometry/triangulation';
 import { ImuSensor } from './imu/sensor';
 import { ImuData } from './imu/normalize';
-import { detectPlane, PlaneResult } from './plane/ransac';
-import { SlamMap } from './slam/map';
-import { Mapper } from './slam/mapper';
+import { PlanarTracker } from './tracking/planar-tracker';
 import { GravityIndicator } from './visualization/gravity-indicator';
-import { PlaneOverlay } from './visualization/plane-overlay';
-import { PointCloudView } from './visualization/point-cloud';
 import { ArScene } from './rendering/ar-scene';
 
 function waitForOpenCv(): Promise<void> {
@@ -48,7 +39,7 @@ async function main() {
   canvas.width = w;
   canvas.height = h;
 
-  // IMU 初期化
+  // IMU
   const imuSensor = new ImuSensor();
   let latestImu: ImuData | null = null;
   let gravity: { x: number; y: number; z: number } | null = null;
@@ -93,19 +84,12 @@ async function main() {
     await startImu();
   }
 
-  loading.style.display = 'none';
-
   // モジュール初期化
   const calibration = new CameraCalibration(w, h);
-  const orb = new OrbDetector(500);
-  const tracker = new FeatureTracker(orb, 200);
-  const slamMap = new SlamMap();
-  const pointCloudView = new PointCloudView(ctx, w, h);
-  const planeOverlay = new PlaneOverlay(ctx);
-  const gravityIndicator = new GravityIndicator(ctx, h);
-  const K = calibration.getCameraMatrixAsMat();
   const Karray = calibration.getCameraMatrix();
-  const mapper = new Mapper(slamMap, Karray);
+  const tracker = new PlanarTracker(1000);
+  const gravityIndicator = new GravityIndicator(ctx, h);
+
   const glCanvas = document.getElementById('gl-canvas') as HTMLCanvasElement;
   glCanvas.width = w;
   glCanvas.height = h;
@@ -117,174 +101,60 @@ async function main() {
   const offCtx = offscreen.getContext('2d')!;
 
   // 状態
-  let initialized = false;
-  let points3D: Point3D[] = [];
-  let planeResult: PlaneResult | null = null;
-  let currentR: number[][] | null = null;
-  let currentT: number[] | null = null;
-  let stableR: number[][] | null = null;  // AR描画用の安定した姿勢
-  let stableT: number[] | null = null;
-  const trajectory: { x: number; z: number }[] = [{ x: 0, z: 0 }];
-  const MOTION_THRESHOLD = 15;
+  let referenceSet = false;
+  let frameCount = 0;
+  const INIT_DELAY = 60; // 60フレーム（約2秒）待ってから参照フレームを取得
+
+  loadingText.textContent = 'カメラを平面に向けてください...';
+  loading.style.display = 'flex';
 
   console.log('[SLAM] starting tracking loop');
 
-  let frameCount = 0;
   function processFrame() {
     try {
       offCtx.drawImage(video, 0, 0, w, h);
       const imageData = offCtx.getImageData(0, 0, w, h);
       const frame = cv.matFromImageData(imageData);
-
-      const result = tracker.process(frame);
-
-      // グレースケールを再ローカライゼーション用に保持
       const gray = new cv.Mat();
       cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
       frame.delete();
 
+      // 映像描画
       ctx.drawImage(video, 0, 0, w, h);
 
-      // 描画: 移動ベクトル
-      ctx.strokeStyle = '#ff0000';
-      ctx.lineWidth = 1.5;
-      for (let i = 0; i < result.count; i++) {
-        const prev = result.prevPoints[i];
-        const curr = result.points[i];
-        if (prev.x !== curr.x || prev.y !== curr.y) {
-          ctx.beginPath();
-          ctx.moveTo(prev.x, prev.y);
-          ctx.lineTo(curr.x, curr.y);
-          ctx.stroke();
-        }
-      }
-
-      // 描画: 特徴点マーカー
-      ctx.fillStyle = '#00ff00';
-      for (let i = 0; i < result.count; i++) {
-        const p = result.points[i];
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      if (!initialized) {
-        if (frameCount % 30 === 0) {
-          console.log(`[SLAM] avgMotion=${result.avgMotion.toFixed(1)}, count=${result.count}`);
-        }
-
-        if (result.avgMotion > MOTION_THRESHOLD && result.count >= 30) {
-          console.log(`[SLAM] initialization trigger: avgMotion=${result.avgMotion.toFixed(1)}`);
-
-          const pose = estimatePose(result.prevPoints, result.points, K);
-
-          if (pose) {
-            const inlierIds: number[] = [];
-            const inlierPrev: { x: number; y: number; id: number }[] = [];
-            const inlierCurr: { x: number; y: number; id: number }[] = [];
-            for (let i = 0; i < result.count; i++) {
-              if (pose.inlierMask[i]) {
-                inlierIds.push(result.ids[i]);
-                inlierPrev.push(result.prevPoints[i]);
-                inlierCurr.push(result.points[i]);
-              }
-            }
-
-            points3D = triangulatePoints(
-              inlierPrev, inlierCurr,
-              pose.R, pose.t,
-              Karray,
-              inlierIds.map(() => true),
-            );
-
-            if (points3D.length > 10) {
-              // ディスクリプタ付きで登録
-              const { descriptors: initDesc } = orb.detectWithDescriptors(gray);
-              slamMap.register(inlierIds.slice(0, points3D.length), points3D, initDesc);
-              initDesc.delete();
-              trajectory.push({ x: pose.t[0], z: pose.t[2] });
-              currentR = pose.R;
-              currentT = pose.t;
-              initialized = true;
-              console.log(`[SLAM] initialized! ${points3D.length} 3D points`);
-
-              // 平面検出（重力フィルタ付き）
-              planeResult = detectPlane(points3D, undefined, 200, gravity ?? undefined);
-
-              // 平面上にキューブを配置
-              if (planeResult) {
-                stableR = currentR ? currentR.map(r => [...r]) : null;
-                stableT = currentT ? [...currentT] : null;
-                arScene.placeModel(planeResult.inliers, planeResult.normal);
-              }
-            }
+      if (!referenceSet) {
+        // 参照フレーム取得待ち
+        frameCount++;
+        if (frameCount === INIT_DELAY) {
+          const kpCount = tracker.setReference(gray);
+          if (kpCount >= 50) {
+            referenceSet = true;
+            arScene.placeModel();
+            loading.style.display = 'none';
+            console.log(`[SLAM] reference frame set, tracking started`);
+          } else {
+            // キーポイントが少なすぎる → リトライ
+            frameCount = 0;
+            console.log(`[SLAM] not enough keypoints (${kpCount}), retrying...`);
           }
+        } else {
+          // カウントダウン表示
+          const remaining = Math.ceil((INIT_DELAY - frameCount) / 30);
+          loadingText.textContent = `平面に向けて静止してください... ${remaining}秒`;
         }
       } else {
-        // ID ベースのマッチを試す
-        const { points3D: matched3D, points2D: matched2D } = slamMap.get3D2DPairs(result.ids, result.points);
+        // 平面追跡
+        const result = tracker.track(gray);
 
-        let pnpOk = false;
-        if (matched3D.length >= 4) {
-          const pnpResult = estimatePosePnP(matched3D, matched2D, K);
-          if (pnpResult && pnpResult.inlierCount >= 3) {
-            currentR = pnpResult.R;
-            currentT = pnpResult.t;
-            trajectory.push({ x: currentT[0], z: currentT[2] });
-            pnpOk = true;
-            // インライアが十分多い時だけ AR 用姿勢を更新
-            if (pnpResult.inlierCount >= 6) {
-              stableR = pnpResult.R.map(r => [...r]);
-              stableT = [...pnpResult.t];
-            }
-            if (frameCount % 30 === 0) {
-              console.log(`[SLAM] PnP(ID): ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
-            }
+        if (result.success && result.H) {
+          arScene.renderFromHomography(result.H);
 
-            const newPts = mapper.expandMap(result.ids, result.points, currentR, currentT);
-            for (const p of newPts) {
-              points3D.push(p);
-            }
+          if (frameCount % 60 === 0) {
+            console.log(`[Track] matches=${result.matchCount}, inliers=${result.inlierCount}`);
           }
+        } else if (frameCount % 30 === 0) {
+          console.log(`[Track] lost: matches=${result.matchCount}, inliers=${result.inlierCount}`);
         }
-
-        // ID ベースが失敗 → ディスクリプタベース再ローカライゼーション
-        if (!pnpOk) {
-          const { keypoints: orbKps, descriptors: orbDesc } = orb.detectWithDescriptors(gray);
-          const { points3D: descMatched3D, points2D: descMatched2D } = slamMap.descriptorMatch(orbKps, orbDesc);
-          orbDesc.delete();
-
-          if (descMatched3D.length >= 6) {
-            const pnpResult = estimatePosePnP(descMatched3D, descMatched2D, K);
-            if (pnpResult && pnpResult.inlierCount >= 4) {
-              currentR = pnpResult.R;
-              currentT = pnpResult.t;
-              trajectory.push({ x: currentT[0], z: currentT[2] });
-              if (pnpResult.inlierCount >= 6) {
-                stableR = pnpResult.R.map(r => [...r]);
-                stableT = [...pnpResult.t];
-              }
-              console.log(`[SLAM] PnP(desc): ${pnpResult.inlierCount}/${descMatched3D.length} inliers`);
-            }
-          } else if (frameCount % 30 === 0) {
-            console.log(`[SLAM] reloc: ID=${matched3D.length}, desc=${descMatched3D.length}, map=${slamMap.size}`);
-          }
-        }
-      }
-
-      // 平面オーバーレイ
-      if (planeResult && currentR && currentT) {
-        planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
-      }
-
-      // AR レンダリング（安定した姿勢でのみ更新）
-      if (arScene.isModelPlaced && stableR && stableT) {
-        arScene.render(stableR, stableT);
-      }
-
-      // 点群 + 軌跡
-      if (initialized) {
-        pointCloudView.draw(points3D, trajectory);
       }
 
       // 重力インジケータ
@@ -293,9 +163,7 @@ async function main() {
       }
 
       gray.delete();
-
       frameCount++;
-      if (frameCount === 1) console.log(`[SLAM] first frame: ${result.count} points`);
     } catch (e) {
       console.error('[SLAM] processFrame error:', e);
     }
