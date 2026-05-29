@@ -150,41 +150,92 @@ async function main() {
         const result = tracker.track(gray);
 
         if (result.success && result.H) {
-          arScene.renderFromHomography(result.H);
-
-          // H で参照フレームの中心点を現フレームに変換して 2D マーカーを描画
           const H = result.H;
-          const refX = w / 2, refY = h / 2;
-          const denom = H[2][0] * refX + H[2][1] * refY + H[2][2];
-          if (Math.abs(denom) > 1e-6) {
-            const curX = (H[0][0] * refX + H[0][1] * refY + H[0][2]) / denom;
-            const curY = (H[1][0] * refX + H[1][1] * refY + H[1][2]) / denom;
-            // 赤い十字マーカー
-            ctx.strokeStyle = '#ff0000';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(curX - 15, curY); ctx.lineTo(curX + 15, curY);
-            ctx.moveTo(curX, curY - 15); ctx.lineTo(curX, curY + 15);
-            ctx.stroke();
-            // 四角の枠（参照フレームの中心付近の正方形を変換）
-            const size = 40;
-            const corners = [
-              [refX - size, refY - size],
-              [refX + size, refY - size],
-              [refX + size, refY + size],
-              [refX - size, refY + size],
+
+          // H で点を変換するヘルパー
+          const transformPt = (px: number, py: number): [number, number] | null => {
+            const d = H[2][0] * px + H[2][1] * py + H[2][2];
+            if (Math.abs(d) < 1e-6) return null;
+            return [
+              (H[0][0] * px + H[0][1] * py + H[0][2]) / d,
+              (H[1][0] * px + H[1][1] * py + H[1][2]) / d,
             ];
-            ctx.strokeStyle = '#00ff00';
+          };
+
+          // キューブの底面（参照フレームの画面中央に正方形）
+          const cx = w / 2, cy = h / 2;
+          const size = 35;
+          const bottom = [
+            transformPt(cx - size, cy - size),
+            transformPt(cx + size, cy - size),
+            transformPt(cx + size, cy + size),
+            transformPt(cx - size, cy + size),
+          ];
+
+          // 上面: 底面を上にオフセット（H のローカルスケールで高さを調整）
+          const heightOffset = size * 1.5;
+          const top = [
+            transformPt(cx - size, cy - size - heightOffset),
+            transformPt(cx + size, cy - size - heightOffset),
+            transformPt(cx + size, cy + size - heightOffset),
+            transformPt(cx - size, cy + size - heightOffset),
+          ];
+
+          // 全点が有効かチェック
+          if (bottom.every(p => p !== null) && top.every(p => p !== null)) {
+            const b = bottom as [number, number][];
+            const t2 = top as [number, number][];
+
+            // 底面（青い半透明）
+            ctx.fillStyle = 'rgba(0, 120, 255, 0.4)';
+            ctx.beginPath();
+            ctx.moveTo(b[0][0], b[0][1]);
+            for (let i = 1; i < 4; i++) ctx.lineTo(b[i][0], b[i][1]);
+            ctx.closePath();
+            ctx.fill();
+
+            // 上面（明るい青の半透明）
+            ctx.fillStyle = 'rgba(80, 180, 255, 0.5)';
+            ctx.beginPath();
+            ctx.moveTo(t2[0][0], t2[0][1]);
+            for (let i = 1; i < 4; i++) ctx.lineTo(t2[i][0], t2[i][1]);
+            ctx.closePath();
+            ctx.fill();
+
+            // 側面（4面）
+            ctx.fillStyle = 'rgba(0, 100, 220, 0.3)';
+            for (let i = 0; i < 4; i++) {
+              const j = (i + 1) % 4;
+              ctx.beginPath();
+              ctx.moveTo(b[i][0], b[i][1]);
+              ctx.lineTo(b[j][0], b[j][1]);
+              ctx.lineTo(t2[j][0], t2[j][1]);
+              ctx.lineTo(t2[i][0], t2[i][1]);
+              ctx.closePath();
+              ctx.fill();
+            }
+
+            // エッジ線
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
             ctx.lineWidth = 2;
+            // 底面エッジ
+            ctx.beginPath();
+            ctx.moveTo(b[0][0], b[0][1]);
+            for (let i = 1; i < 4; i++) ctx.lineTo(b[i][0], b[i][1]);
+            ctx.closePath();
+            ctx.stroke();
+            // 上面エッジ
+            ctx.beginPath();
+            ctx.moveTo(t2[0][0], t2[0][1]);
+            for (let i = 1; i < 4; i++) ctx.lineTo(t2[i][0], t2[i][1]);
+            ctx.closePath();
+            ctx.stroke();
+            // 縦エッジ
             ctx.beginPath();
             for (let i = 0; i < 4; i++) {
-              const [sx, sy] = corners[i];
-              const d = H[2][0] * sx + H[2][1] * sy + H[2][2];
-              const cx2 = (H[0][0] * sx + H[0][1] * sy + H[0][2]) / d;
-              const cy2 = (H[1][0] * sx + H[1][1] * sy + H[1][2]) / d;
-              if (i === 0) ctx.moveTo(cx2, cy2); else ctx.lineTo(cx2, cy2);
+              ctx.moveTo(b[i][0], b[i][1]);
+              ctx.lineTo(t2[i][0], t2[i][1]);
             }
-            ctx.closePath();
             ctx.stroke();
           }
 
