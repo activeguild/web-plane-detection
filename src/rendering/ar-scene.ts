@@ -13,6 +13,7 @@ export class ArScene {
       canvas: glCanvas,
       alpha: true,
       antialias: true,
+      preserveDrawingBuffer: true,
     });
     this.renderer.setSize(width, height);
     this.renderer.setClearColor(0x000000, 0);
@@ -58,9 +59,12 @@ export class ArScene {
       roughness: 0.7,
     });
     this.cube = new THREE.Mesh(geometry, material);
-    this.cube.position.set(cx, cy, cz);
 
-    const up = new THREE.Vector3(planeNormal[0], planeNormal[1], planeNormal[2]).normalize();
+    // 3D点群は OpenCV 座標系 (X右, Y下, Z前方) で定義されている
+    // Three.js 座標系 (X右, Y上, Z手前) に変換: Y と Z を反転
+    this.cube.position.set(cx, -cy, -cz);
+
+    const up = new THREE.Vector3(planeNormal[0], -planeNormal[1], -planeNormal[2]).normalize();
     const defaultUp = new THREE.Vector3(0, 1, 0);
     const quat = new THREE.Quaternion().setFromUnitVectors(defaultUp, up);
     this.cube.quaternion.copy(quat);
@@ -75,20 +79,53 @@ export class ArScene {
     console.log(`[AR] cube placed at (${cx.toFixed(2)}, ${cy.toFixed(2)}, ${cz.toFixed(2)}), size=${cubeSize.toFixed(3)}`);
   }
 
+  // R, t は solvePnPRansac の出力 = ワールド→カメラ変換 (OpenCV 座標系)
   render(R: number[][], t: number[]): void {
     if (!this._isModelPlaced) return;
 
+    // OpenCV 座標系 (X右, Y下, Z前方) → Three.js 座標系 (X右, Y上, Z手前)
+    // フリップ行列 F = diag(1, -1, -1)
+    // R_three = F × R_cv × F  (F = F^-1 なので)
+    // t_three = F × t_cv
+    //
+    // R_cv の [R|t] はワールド→カメラ。Three.js の camera.matrix はカメラ→ワールド。
+    // camera.matrix = (F × [R|t] × F)^-1
+    //               = F × [R|t]^-1 × F
+    //               = F × [R^T | -R^T×t] × F
+
+    // R^T (= R の逆行列、R は回転行列なので)
+    const Rt = [
+      [R[0][0], R[1][0], R[2][0]],
+      [R[0][1], R[1][1], R[2][1]],
+      [R[0][2], R[1][2], R[2][2]],
+    ];
+
+    // カメラ位置 (ワールド座標) = -R^T × t
+    const camPos = [
+      -(Rt[0][0]*t[0] + Rt[0][1]*t[1] + Rt[0][2]*t[2]),
+      -(Rt[1][0]*t[0] + Rt[1][1]*t[1] + Rt[1][2]*t[2]),
+      -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2]),
+    ];
+
+    // F × [R^T | camPos] × F
+    // F × R^T × F: Y,Z を反転
+    // 結果の行列:
+    //   R'[0][0] =  Rt[0][0],  R'[0][1] = -Rt[0][1],  R'[0][2] = -Rt[0][2]
+    //   R'[1][0] = -Rt[1][0],  R'[1][1] =  Rt[1][1],  R'[1][2] =  Rt[1][2]
+    //   R'[2][0] = -Rt[2][0],  R'[2][1] =  Rt[2][1],  R'[2][2] =  Rt[2][2]
+    // t' = F × camPos = [camPos[0], -camPos[1], -camPos[2]]
+
     const mat = new THREE.Matrix4();
+    // Three.js Matrix4.set() は行優先で引数を取る
     mat.set(
-      R[0][0],  -R[0][1],  -R[0][2],  t[0],
-      -R[1][0],  R[1][1],   R[1][2],  -t[1],
-      -R[2][0],  R[2][1],   R[2][2],  -t[2],
-      0,         0,          0,         1,
+       Rt[0][0], -Rt[0][1], -Rt[0][2],  camPos[0],
+      -Rt[1][0],  Rt[1][1],  Rt[1][2], -camPos[1],
+      -Rt[2][0],  Rt[2][1],  Rt[2][2], -camPos[2],
+       0,         0,          0,         1,
     );
 
-    const viewMatrixInverse = mat.clone().invert();
     this.camera.matrixAutoUpdate = false;
-    this.camera.matrix.copy(viewMatrixInverse);
+    this.camera.matrix.copy(mat);
     this.camera.matrixWorldNeedsUpdate = true;
 
     this.renderer.render(this.scene, this.camera);
