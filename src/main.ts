@@ -120,10 +120,10 @@ async function main() {
   let initialized = false;
   let points3D: Point3D[] = [];
   let planeResult: PlaneResult | null = null;
-  let initR: number[][] | null = null;  // 初期化時の姿勢（AR固定用）
-  let initT: number[] | null = null;
   let currentR: number[][] | null = null;
   let currentT: number[] | null = null;
+  let stableR: number[][] | null = null;  // AR描画用の安定した姿勢
+  let stableT: number[] | null = null;
   const trajectory: { x: number; z: number }[] = [{ x: 0, z: 0 }];
   const MOTION_THRESHOLD = 15;
 
@@ -211,10 +211,10 @@ async function main() {
               // 平面検出（重力フィルタ付き）
               planeResult = detectPlane(points3D, undefined, 200, gravity ?? undefined);
 
-              // 平面上にキューブを配置（初期化時の姿勢を保存）
+              // 平面上にキューブを配置
               if (planeResult) {
-                initR = currentR ? currentR.map(r => [...r]) : null;
-                initT = currentT ? [...currentT] : null;
+                stableR = currentR ? currentR.map(r => [...r]) : null;
+                stableT = currentT ? [...currentT] : null;
                 arScene.placeModel(planeResult.inliers, planeResult.normal);
               }
             }
@@ -232,6 +232,11 @@ async function main() {
             currentT = pnpResult.t;
             trajectory.push({ x: currentT[0], z: currentT[2] });
             pnpOk = true;
+            // インライアが十分多い時だけ AR 用姿勢を更新
+            if (pnpResult.inlierCount >= 6) {
+              stableR = pnpResult.R.map(r => [...r]);
+              stableT = [...pnpResult.t];
+            }
             if (frameCount % 30 === 0) {
               console.log(`[SLAM] PnP(ID): ${pnpResult.inlierCount}/${matched3D.length} inliers, map=${slamMap.size}`);
             }
@@ -255,6 +260,10 @@ async function main() {
               currentR = pnpResult.R;
               currentT = pnpResult.t;
               trajectory.push({ x: currentT[0], z: currentT[2] });
+              if (pnpResult.inlierCount >= 6) {
+                stableR = pnpResult.R.map(r => [...r]);
+                stableT = [...pnpResult.t];
+              }
               console.log(`[SLAM] PnP(desc): ${pnpResult.inlierCount}/${descMatched3D.length} inliers`);
             }
           } else if (frameCount % 30 === 0) {
@@ -268,9 +277,9 @@ async function main() {
         planeOverlay.draw(planeResult.inliers, currentR, currentT, Karray);
       }
 
-      // AR レンダリング（カメラ姿勢に追従）
-      if (arScene.isModelPlaced && currentR && currentT) {
-        arScene.render(currentR, currentT);
+      // AR レンダリング（安定した姿勢でのみ更新）
+      if (arScene.isModelPlaced && stableR && stableT) {
+        arScene.render(stableR, stableT);
       }
 
       // 点群 + 軌跡
