@@ -157,13 +157,23 @@ export class PlanarTracker {
     }
     H.delete();
 
-    // ホモグラフィの時間的平滑化
+    // 適応的平滑化: H の変化量に応じて alpha を調整
     let smoothed: number[][];
     if (this.prevH === null) {
       smoothed = Harr;
     } else {
+      // H の変化量を計算（各要素の差の二乗和）
+      let diff = 0;
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          const d = Harr[i][j] - this.prevH[i][j];
+          diff += d * d;
+        }
+      }
+      // 変化が大きい → alpha 高く（追従優先）、小さい → alpha 低く（安定優先）
+      const alpha = Math.min(0.9, Math.max(0.15, diff * 50));
       smoothed = Harr.map((row, i) =>
-        row.map((v, j) => this.smoothAlpha * v + (1 - this.smoothAlpha) * this.prevH![i][j])
+        row.map((v, j) => alpha * v + (1 - alpha) * this.prevH![i][j])
       );
     }
     this.prevH = smoothed;
