@@ -8,6 +8,11 @@ export class ArScene {
   private cube: THREE.Mesh | null = null;
   private _isModelPlaced = false;
 
+  // 姿勢平滑化用
+  private smoothQuat: THREE.Quaternion | null = null;
+  private smoothPos: THREE.Vector3 | null = null;
+  private readonly smoothAlpha = 0.08; // 小さいほど滑らか（0.08 = 前フレーム92%, 新フレーム8%）
+
   constructor(glCanvas: HTMLCanvasElement, width: number, height: number, K: number[][]) {
     this.renderer = new THREE.WebGLRenderer({
       canvas: glCanvas,
@@ -60,8 +65,7 @@ export class ArScene {
     });
     this.cube = new THREE.Mesh(geometry, material);
 
-    // 3D点群は OpenCV 座標系 (X右, Y下, Z前方) で定義されている
-    // Three.js 座標系 (X右, Y上, Z手前) に変換: Y と Z を反転
+    // OpenCV → Three.js: Y,Z 反転
     this.cube.position.set(cx, -cy, -cz);
 
     const up = new THREE.Vector3(planeNormal[0], -planeNormal[1], -planeNormal[2]).normalize();
@@ -79,21 +83,11 @@ export class ArScene {
     console.log(`[AR] cube placed at (${cx.toFixed(2)}, ${cy.toFixed(2)}, ${cz.toFixed(2)}), size=${cubeSize.toFixed(3)}`);
   }
 
-  // R, t は solvePnPRansac の出力 = ワールド→カメラ変換 (OpenCV 座標系)
+  // R, t は solvePnPRansac の出力 = ワールド→カメラ (OpenCV 座標系)
   render(R: number[][], t: number[]): void {
     if (!this._isModelPlaced) return;
 
-    // OpenCV 座標系 (X右, Y下, Z前方) → Three.js 座標系 (X右, Y上, Z手前)
-    // フリップ行列 F = diag(1, -1, -1)
-    // R_three = F × R_cv × F  (F = F^-1 なので)
-    // t_three = F × t_cv
-    //
-    // R_cv の [R|t] はワールド→カメラ。Three.js の camera.matrix はカメラ→ワールド。
-    // camera.matrix = (F × [R|t] × F)^-1
-    //               = F × [R|t]^-1 × F
-    //               = F × [R^T | -R^T×t] × F
-
-    // R^T (= R の逆行列、R は回転行列なので)
+    // R^T (回転の逆)
     const Rt = [
       [R[0][0], R[1][0], R[2][0]],
       [R[0][1], R[1][1], R[2][1]],
@@ -107,25 +101,44 @@ export class ArScene {
       -(Rt[2][0]*t[0] + Rt[2][1]*t[1] + Rt[2][2]*t[2]),
     ];
 
-    // F × [R^T | camPos] × F
-    // F × R^T × F: Y,Z を反転
-    // 結果の行列:
-    //   R'[0][0] =  Rt[0][0],  R'[0][1] = -Rt[0][1],  R'[0][2] = -Rt[0][2]
-    //   R'[1][0] = -Rt[1][0],  R'[1][1] =  Rt[1][1],  R'[1][2] =  Rt[1][2]
-    //   R'[2][0] = -Rt[2][0],  R'[2][1] =  Rt[2][1],  R'[2][2] =  Rt[2][2]
-    // t' = F × camPos = [camPos[0], -camPos[1], -camPos[2]]
-
-    const mat = new THREE.Matrix4();
-    // Three.js Matrix4.set() は行優先で引数を取る
-    mat.set(
+    // F × R^T × F で Three.js 座標系に変換（F = diag(1,-1,-1)）
+    const camToWorldMat = new THREE.Matrix4();
+    camToWorldMat.set(
        Rt[0][0], -Rt[0][1], -Rt[0][2],  camPos[0],
       -Rt[1][0],  Rt[1][1],  Rt[1][2], -camPos[1],
       -Rt[2][0],  Rt[2][1],  Rt[2][2], -camPos[2],
        0,         0,          0,         1,
     );
 
+    // 行列から Quaternion と Position を抽出
+    const newPos = new THREE.Vector3();
+    const newQuat = new THREE.Quaternion();
+    const newScale = new THREE.Vector3();
+    camToWorldMat.decompose(newPos, newQuat, newScale);
+
+    // 初回は直接設定
+    if (this.smoothQuat === null || this.smoothPos === null) {
+      this.smoothQuat = newQuat.clone();
+      this.smoothPos = newPos.clone();
+    } else {
+      // 外れ値検出: 位置が大きくジャンプしたら無視
+      const jumpDist = this.smoothPos.distanceTo(newPos);
+      const maxJump = 5.0; // スケールに依存するが大きめに設定
+      if (jumpDist < maxJump) {
+        // Quaternion SLERP で回転を滑らかに補間
+        this.smoothQuat.slerp(newQuat, this.smoothAlpha);
+        // 位置を線形補間
+        this.smoothPos.lerp(newPos, this.smoothAlpha);
+      }
+      // ジャンプが大きすぎる場合は smoothQuat/Pos を更新しない（前の姿勢を維持）
+    }
+
+    // 平滑化された姿勢でカメラを設定
+    const smoothMat = new THREE.Matrix4();
+    smoothMat.compose(this.smoothPos, this.smoothQuat, new THREE.Vector3(1, 1, 1));
+
     this.camera.matrixAutoUpdate = false;
-    this.camera.matrix.copy(mat);
+    this.camera.matrix.copy(smoothMat);
     this.camera.matrixWorldNeedsUpdate = true;
 
     this.renderer.render(this.scene, this.camera);
