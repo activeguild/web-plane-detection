@@ -10,7 +10,8 @@ export class ArScene {
   // 姿勢平滑化
   private smoothQuat: THREE.Quaternion | null = null;
   private smoothPos: THREE.Vector3 | null = null;
-  private readonly smoothAlpha = 0.15;
+  private readonly smoothAlpha = 0.1;
+  private logCount = 0;
 
   private K: number[][];
   private Kinv: number[][];
@@ -93,7 +94,18 @@ export class ArScene {
       r1[2]*r2[0] - r1[0]*r2[2],
       r1[0]*r2[1] - r1[1]*r2[0],
     ];
-    const t = h3.map(v => v * lambda);
+    // h3 = r3 + t/d なので、t/d = h3*lambda - r3
+    const h3scaled = h3.map(v => v * lambda);
+    const t = [
+      h3scaled[0] - r3[0],
+      h3scaled[1] - r3[1],
+      h3scaled[2] - r3[2],
+    ];
+
+    if (this.logCount < 10) {
+      console.log(`[AR] t=(${t[0].toFixed(4)}, ${t[1].toFixed(4)}, ${t[2].toFixed(4)})`);
+      this.logCount++;
+    }
 
     // R (ワールド→カメラ, OpenCV座標系)
     const R = [

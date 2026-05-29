@@ -105,8 +105,7 @@ async function main() {
   let frameCount = 0;
   const INIT_DELAY = 60; // 60フレーム（約2秒）待ってから参照フレームを取得
 
-  loadingText.textContent = 'カメラを平面に向けてください...';
-  loading.style.display = 'flex';
+  loading.style.display = 'none';
 
   console.log('[SLAM] starting tracking loop');
 
@@ -125,22 +124,26 @@ async function main() {
       if (!referenceSet) {
         // 参照フレーム取得待ち
         frameCount++;
-        if (frameCount === INIT_DELAY) {
+        if (frameCount >= INIT_DELAY) {
           const kpCount = tracker.setReference(gray);
           if (kpCount >= 50) {
             referenceSet = true;
             arScene.placeModel();
-            loading.style.display = 'none';
             console.log(`[SLAM] reference frame set, tracking started`);
           } else {
-            // キーポイントが少なすぎる → リトライ
             frameCount = 0;
             console.log(`[SLAM] not enough keypoints (${kpCount}), retrying...`);
           }
-        } else {
-          // カウントダウン表示
+        }
+        // カウントダウンをキャンバスに描画
+        if (!referenceSet) {
           const remaining = Math.ceil((INIT_DELAY - frameCount) / 30);
-          loadingText.textContent = `平面に向けて静止してください... ${remaining}秒`;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          ctx.fillRect(0, h / 2 - 30, w, 60);
+          ctx.fillStyle = '#fff';
+          ctx.font = '20px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`平面に向けて静止してください... ${remaining}`, w / 2, h / 2 + 7);
         }
       } else {
         // 平面追跡
@@ -148,6 +151,42 @@ async function main() {
 
         if (result.success && result.H) {
           arScene.renderFromHomography(result.H);
+
+          // H で参照フレームの中心点を現フレームに変換して 2D マーカーを描画
+          const H = result.H;
+          const refX = w / 2, refY = h / 2;
+          const denom = H[2][0] * refX + H[2][1] * refY + H[2][2];
+          if (Math.abs(denom) > 1e-6) {
+            const curX = (H[0][0] * refX + H[0][1] * refY + H[0][2]) / denom;
+            const curY = (H[1][0] * refX + H[1][1] * refY + H[1][2]) / denom;
+            // 赤い十字マーカー
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(curX - 15, curY); ctx.lineTo(curX + 15, curY);
+            ctx.moveTo(curX, curY - 15); ctx.lineTo(curX, curY + 15);
+            ctx.stroke();
+            // 四角の枠（参照フレームの中心付近の正方形を変換）
+            const size = 40;
+            const corners = [
+              [refX - size, refY - size],
+              [refX + size, refY - size],
+              [refX + size, refY + size],
+              [refX - size, refY + size],
+            ];
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < 4; i++) {
+              const [sx, sy] = corners[i];
+              const d = H[2][0] * sx + H[2][1] * sy + H[2][2];
+              const cx2 = (H[0][0] * sx + H[0][1] * sy + H[0][2]) / d;
+              const cy2 = (H[1][0] * sx + H[1][1] * sy + H[1][2]) / d;
+              if (i === 0) ctx.moveTo(cx2, cy2); else ctx.lineTo(cx2, cy2);
+            }
+            ctx.closePath();
+            ctx.stroke();
+          }
 
           if (frameCount % 60 === 0) {
             console.log(`[Track] matches=${result.matchCount}, inliers=${result.inlierCount}`);

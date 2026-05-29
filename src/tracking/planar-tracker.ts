@@ -3,7 +3,7 @@ import { Point2D } from '../features/orb';
 
 export type PlanarTrackResult = {
   success: boolean;
-  H: number[][] | null;        // 3×3 ホモグラフィ行列 (参照→現フレーム)
+  H: number[][] | null;
   matchCount: number;
   inlierCount: number;
 };
@@ -15,11 +15,14 @@ export class PlanarTracker {
   private refKeypoints: Point2D[] = [];
   private _isInitialized = false;
 
+  // ホモグラフィの時間的平滑化
+  private prevH: number[][] | null = null;
+  private readonly smoothAlpha = 0.3; // 新フレーム 30%, 前フレーム 70%
+
   constructor(nfeatures: number = 1000) {
     this.orb = new cv.ORB(nfeatures);
   }
 
-  // 参照フレームを設定
   setReference(gray: cv.Mat): number {
     if (this.refDescriptors) {
       this.refDescriptors.delete();
@@ -39,12 +42,12 @@ export class PlanarTracker {
 
     this.refDescriptors = desc;
     this._isInitialized = true;
+    this.prevH = null;
 
     console.log(`[Track] reference set: ${this.refKeypoints.length} keypoints`);
     return this.refKeypoints.length;
   }
 
-  // 現フレームを参照フレームとマッチングしてホモグラフィを計算
   track(gray: cv.Mat): PlanarTrackResult {
     if (!this._isInitialized || !this.refDescriptors) {
       return { success: false, H: null, matchCount: 0, inlierCount: 0 };
@@ -68,28 +71,31 @@ export class PlanarTracker {
       return { success: false, H: null, matchCount: 0, inlierCount: 0 };
     }
 
-    // BFMatcher
-    const bf = new cv.BFMatcher(cv.NORM_HAMMING, true);
-    const matches = new cv.DMatchVector();
+    // knnMatch + Lowe's ratio test (crossCheck=false)
+    const bf = new cv.BFMatcher(cv.NORM_HAMMING, false);
+    const matchesVec = new cv.DMatchVectorVector();
     try {
-      bf.match(desc, this.refDescriptors, matches);
+      bf.knnMatch(desc, this.refDescriptors, matchesVec, 2);
     } catch (e) {
       bf.delete();
       desc.delete();
-      matches.delete();
+      matchesVec.delete();
       return { success: false, H: null, matchCount: 0, inlierCount: 0 };
     }
 
-    // 距離でフィルタ + ソート
-    const goodMatches: { queryIdx: number; trainIdx: number; distance: number }[] = [];
-    for (let i = 0; i < matches.size(); i++) {
-      const m = matches.get(i);
-      if (m.distance < 70) {
-        goodMatches.push({ queryIdx: m.queryIdx, trainIdx: m.trainIdx, distance: m.distance });
+    // Lowe's ratio test: 1番目 / 2番目 < 0.75
+    const goodMatches: { queryIdx: number; trainIdx: number }[] = [];
+    for (let i = 0; i < matchesVec.size(); i++) {
+      const knn = matchesVec.get(i);
+      if (knn.size() >= 2) {
+        const m1 = knn.get(0);
+        const m2 = knn.get(1);
+        if (m1.distance < 0.75 * m2.distance) {
+          goodMatches.push({ queryIdx: m1.queryIdx, trainIdx: m1.trainIdx });
+        }
       }
     }
-    goodMatches.sort((a, b) => a.distance - b.distance);
-    matches.delete();
+    matchesVec.delete();
     bf.delete();
     desc.delete();
 
@@ -98,7 +104,7 @@ export class PlanarTracker {
     }
 
     // マッチした点のペアを構築
-    const n = Math.min(goodMatches.length, 200); // 上位200件
+    const n = goodMatches.length;
     const srcPts = new cv.Mat(n, 1, cv.CV_32FC2);
     const dstPts = new cv.Mat(n, 1, cv.CV_32FC2);
     const srcData = srcPts.data32F;
@@ -129,7 +135,6 @@ export class PlanarTracker {
     srcPts.delete();
     dstPts.delete();
 
-    // インライア数
     let inlierCount = 0;
     for (let i = 0; i < mask.rows; i++) {
       if (mask.data[i] === 1) inlierCount++;
@@ -152,7 +157,18 @@ export class PlanarTracker {
     }
     H.delete();
 
-    return { success: true, H: Harr, matchCount: n, inlierCount };
+    // ホモグラフィの時間的平滑化
+    let smoothed: number[][];
+    if (this.prevH === null) {
+      smoothed = Harr;
+    } else {
+      smoothed = Harr.map((row, i) =>
+        row.map((v, j) => this.smoothAlpha * v + (1 - this.smoothAlpha) * this.prevH![i][j])
+      );
+    }
+    this.prevH = smoothed;
+
+    return { success: true, H: smoothed, matchCount: n, inlierCount };
   }
 
   get isInitialized(): boolean {
